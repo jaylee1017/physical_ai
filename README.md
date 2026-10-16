@@ -12,7 +12,7 @@
 
 ```bash
 mkdir -p ~/ros2_ws && cd ~/ros2_ws
-git clone https://github.com/<계정>/physical_ai.git src
+git clone https://github.com/jaylee1017/physical_ai.git src
 pip install ultralytics "numpy<2"
 colcon build
 source install/setup.bash
