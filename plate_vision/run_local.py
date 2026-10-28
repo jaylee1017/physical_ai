@@ -12,15 +12,22 @@ rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
     python run_local.py --only band --band-cam 2       # 빨간 띠 노드만
     python run_local.py --only plate --plate-cam 2     # 빈 접시 노드만
 
+  카메라 없이 (사진 폴더 / 동영상 / 'demo' 를 카메라처럼 사용):
+    python run_local.py --plate-src test_images --band-src demo
+    python run_local.py --only plate --plate-src 접시영상.mp4
+
   Plate State 창: [m] 음식 마스크  [q] 종료
   Red Detection 창: [r] count 초기화(END 후)  [q] 종료
 """
 import argparse
+import glob
 import os
 import sys
+import time
 import types
 
 import cv2
+import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _running = True
@@ -169,19 +176,105 @@ def _install_stubs():
         cv2.VideoCapture = video_capture
 
 
+# ------------------------------------------------------------------ 카메라 없이 테스트
+class FakeCamera:
+    """
+    카메라 대신 쓰는 입력
+      - 이미지 폴더 / 이미지 파일: 한 장을 hold 프레임 동안 보여 주고 다음 장으로 (끝나면 처음부터)
+      - 동영상 파일: 끝나면 처음부터 반복
+      - 'demo': 빨간 사각형이 나타났다 사라지기를 반복 (빨간 띠 카운트 테스트용)
+    """
+
+    def __init__(self, src, hold):
+        self.hold, self.tick, self.video = hold, 0, None
+        if src == 'demo':
+            blank = np.full((480, 640, 3), 128, np.uint8)
+            red = blank.copy()
+            cv2.rectangle(red, (220, 160), (420, 320), (0, 0, 255), -1)
+            self.frames = [red, blank]
+        elif os.path.isdir(src):
+            files = sorted(f for f in glob.glob(os.path.join(src, '*'))
+                           if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')))
+            self.frames = [cv2.imread(f) for f in files]
+        elif src.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+            self.frames = [cv2.imread(src)]
+        else:
+            self.video, self.frames = _real_capture(src), None
+        if self.frames is not None and not self.frames:
+            raise SystemExit(f'[오류] {src} 에 이미지가 없습니다.')
+
+    def isOpened(self):
+        return self.frames is not None or self.video.isOpened()
+
+    def set(self, *args):
+        return True
+
+    def get(self, prop):
+        return 0
+
+    def read(self):
+        time.sleep(0.03)  # 실제 카메라(약 30fps)처럼 속도 맞춤
+        if self.video is not None:
+            ok, frame = self.video.read()
+            if not ok:
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = self.video.read()
+            return ok, frame
+        frame = self.frames[(self.tick // self.hold) % len(self.frames)]
+        self.tick += 1
+        return True, frame.copy()
+
+    def release(self):
+        if self.video is not None:
+            self.video.release()
+
+
+_real_capture = cv2.VideoCapture
+_fake_sources = {}   # 가짜 카메라 번호 -> FakeCamera
+
+
+def _install_fake_sources():
+    current = cv2.VideoCapture  # (Windows 면 DSHOW 로 바꾼 버전)
+
+    def video_capture(index, backend=cv2.CAP_ANY):
+        if index in _fake_sources:
+            return _fake_sources[index]
+        return current(index, backend)
+
+    cv2.VideoCapture = video_capture
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--plate-cam', type=int, default=0, help='회전 테이블 카메라 번호')
     ap.add_argument('--band-cam', type=int, default=2, help='트레이 띠 카메라 번호')
+    ap.add_argument('--plate-src', help='카메라 대신: 이미지 폴더 / 이미지 / 동영상 경로')
+    ap.add_argument('--band-src', help="카메라 대신: 이미지 폴더 / 이미지 / 동영상 경로, 또는 'demo'")
+    ap.add_argument('--hold', type=int, default=30, help='이미지 한 장을 보여 줄 프레임 수 (30 ≈ 1초)')
     ap.add_argument('--only', choices=['plate', 'band'], help='한 노드만 실행')
     args = ap.parse_args()
 
+    try:
+        import torch
+        print(f'[device] {"GPU: " + torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"}')
+    except ImportError:
+        pass
+
     _install_stubs()
+    plate_cam, band_cam = args.plate_cam, args.band_cam
+    if args.plate_src:
+        plate_cam = -1
+        _fake_sources[plate_cam] = FakeCamera(args.plate_src, args.hold)
+    if args.band_src:
+        band_cam = -2
+        _fake_sources[band_cam] = FakeCamera(args.band_src, args.hold)
+    _install_fake_sources()
+
     from plate_vision.plate_state_node import PlateStateNode
     from plate_vision.red_count_node import RedCountNode
 
-    _params[('plate_state_node', 'camera_index')] = args.plate_cam
-    _params[('red_count_node', 'camera_index')] = args.band_cam
+    _params[('plate_state_node', 'camera_index')] = plate_cam
+    _params[('red_count_node', 'camera_index')] = band_cam
 
     nodes = []
     if args.only != 'plate':
