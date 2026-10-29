@@ -14,7 +14,7 @@ def generate_launch_description():
         DeclareLaunchArgument('plate_camera', default_value='0',
                               description='회전 테이블을 내려다보는 카메라 /dev/videoN (빈 접시 판별)'),
         DeclareLaunchArgument('band_camera', default_value='2',
-                              description='트레이에 쌓인 접시 옆면을 보는 카메라 /dev/videoN (빨간 띠 카운트)'),
+                              description='트레이에 쌓인 접시 옆면을 보는 카메라 /dev/videoN (파란 띠 카운트)'),
 
         Node(
             package='plate_vision',
@@ -25,8 +25,8 @@ def generate_launch_description():
         ),
         Node(
             package='plate_vision',
-            executable='red_count_node',
-            name='red_count_node',
+            executable='band_count_node',
+            name='band_count_node',
             output='screen',
             parameters=[{'camera_index': LaunchConfiguration('band_camera')}],
         ),

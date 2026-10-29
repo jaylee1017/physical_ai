@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'plate_state_node = plate_vision.plate_state_node:main',
+            'band_count_node = plate_vision.band_count_node:main',
             'red_count_node = plate_vision.red_count_node:main',
         ],
     },

@@ -1,7 +1,7 @@
 """
 ROS2 없이 내 PC(Windows)에서 두 노드를 그대로 실행해 보는 테스트용 스크립트
 
-plate_state_node.py / red_count_node.py 코드는 한 줄도 바꾸지 않고,
+plate_state_node.py / band_count_node.py 코드는 한 줄도 바꾸지 않고,
 rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
   - 노드끼리 주고받는 토픽(/tray/ready 등)은 실제처럼 전달됨
   - 발행되는 메시지는 터미널에 출력
@@ -17,7 +17,7 @@ rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
     python run_local.py --only plate --plate-src 접시영상.mp4
 
   Plate State 창: [m] 음식 마스크  [q] 종료
-  Red Detection 창: [r] count 초기화(END 후)  [q] 종료
+  Band Count 창: [o] 마우스로 ROI 지정  [r] count 초기화  [q] 종료
 """
 import argparse
 import glob
@@ -182,16 +182,13 @@ class FakeCamera:
     카메라 대신 쓰는 입력
       - 이미지 폴더 / 이미지 파일: 한 장을 hold 프레임 동안 보여 주고 다음 장으로 (끝나면 처음부터)
       - 동영상 파일: 끝나면 처음부터 반복
-      - 'demo': 빨간 사각형이 나타났다 사라지기를 반복 (빨간 띠 카운트 테스트용)
+      - 'demo': 파란 띠 접시가 0 → 1 → 2 → 3 개로 쌓이는 장면 반복 (띠 카운트 테스트용)
     """
 
     def __init__(self, src, hold):
         self.hold, self.tick, self.video = hold, 0, None
         if src == 'demo':
-            blank = np.full((480, 640, 3), 128, np.uint8)
-            red = blank.copy()
-            cv2.rectangle(red, (220, 160), (420, 320), (0, 0, 255), -1)
-            self.frames = [red, blank]
+            self.frames = [_demo_stack(n) for n in (0, 1, 2, 3)]
         elif os.path.isdir(src):
             files = sorted(f for f in glob.glob(os.path.join(src, '*'))
                            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')))
@@ -227,6 +224,18 @@ class FakeCamera:
     def release(self):
         if self.video is not None:
             self.video.release()
+
+
+def _demo_stack(n):
+    """옆에서 본 트레이 위 접시 n 개 (각 접시 옆면에 파란 띠)"""
+    img = np.full((480, 640, 3), (170, 170, 170), np.uint8)
+    cv2.rectangle(img, (160, 390), (480, 410), (60, 60, 60), -1)                 # 트레이
+    for i in range(n):
+        y = 385 - i * 30
+        cv2.rectangle(img, (190, y - 24), (450, y), (40, 40, 40), -1)            # 접시 옆면
+        cv2.rectangle(img, (200, y - 18), (440, y - 8), (200, 90, 20), -1)       # 파란 띠
+    cv2.putText(img, f'demo: {n} plates', (20, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    return img
 
 
 _real_capture = cv2.VideoCapture
@@ -271,14 +280,14 @@ def main():
     _install_fake_sources()
 
     from plate_vision.plate_state_node import PlateStateNode
-    from plate_vision.red_count_node import RedCountNode
+    from plate_vision.band_count_node import BandCountNode
 
     _params[('plate_state_node', 'camera_index')] = plate_cam
-    _params[('red_count_node', 'camera_index')] = band_cam
+    _params[('band_count_node', 'camera_index')] = band_cam
 
     nodes = []
     if args.only != 'plate':
-        nodes.append(RedCountNode())   # /tray/ready 를 먼저 발행하도록 먼저 생성
+        nodes.append(BandCountNode())  # /tray/ready 를 먼저 발행하도록 먼저 생성
     if args.only != 'band':
         nodes.append(PlateStateNode())
 
