@@ -12,6 +12,10 @@ rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
     python run_local.py --only band --band-cam 2       # 빨간 띠 노드만
     python run_local.py --only plate --plate-cam 2     # 빈 접시 노드만
 
+  카메라 1대(위에서) 통합: 빈 접시 판별 + 트레이 파란 띠 세기
+    python run_local.py --top-cam 1
+    python run_local.py --top-src 영상.mp4
+
   카메라 없이 (사진 폴더 / 동영상 / 'demo' 를 카메라처럼 사용):
     python run_local.py --plate-src test_images --band-src demo
     python run_local.py --only plate --plate-src 접시영상.mp4
@@ -258,6 +262,8 @@ def main():
     ap.add_argument('--band-src', help="카메라 대신: 이미지 폴더 / 이미지 / 동영상 경로, 또는 'demo'")
     ap.add_argument('--hold', type=int, default=30, help='이미지 한 장을 보여 줄 프레임 수 (30 ≈ 1초)')
     ap.add_argument('--only', choices=['plate', 'band'], help='한 노드만 실행')
+    ap.add_argument('--top-cam', type=int, help='카메라 1대(위에서) 통합 노드로 실행: 카메라 번호')
+    ap.add_argument('--top-src', help='카메라 1대 통합 노드를 카메라 대신 이미지 폴더 / 동영상으로')
     args = ap.parse_args()
 
     try:
@@ -274,19 +280,17 @@ def main():
     if args.band_src:
         band_cam = -2
         _fake_sources[band_cam] = FakeCamera(args.band_src, args.hold)
+    if args.top_src:
+        _fake_sources[-3] = FakeCamera(args.top_src, args.hold)
     _install_fake_sources()
 
-    from plate_vision.plate_state_node import PlateStateNode
-    from plate_vision.band_count_node import BandCountNode
-
-    _params[('plate_state_node', 'camera_index')] = plate_cam
-    _params[('band_count_node', 'camera_index')] = band_cam
-
-    nodes = []
-    if args.only != 'plate':
-        nodes.append(BandCountNode())  # /tray/ready 를 먼저 발행하도록 먼저 생성
-    if args.only != 'band':
-        nodes.append(PlateStateNode())
+    if args.top_cam is not None or args.top_src:
+        # 위에서 보는 카메라 1대로 빈 접시 판별 + 트레이 띠 세기
+        from plate_vision.top_vision_node import TopVisionNode
+        _params[('top_vision_node', 'camera_index')] = -3 if args.top_src else args.top_cam
+        nodes = [TopVisionNode()]
+    else:
+        nodes = _two_camera_nodes(args, plate_cam, band_cam)
 
     try:
         while _running:
@@ -298,6 +302,21 @@ def main():
     finally:
         for node in nodes:
             node.destroy_node()
+
+
+def _two_camera_nodes(args, plate_cam, band_cam):
+    from plate_vision.plate_state_node import PlateStateNode
+    from plate_vision.band_count_node import BandCountNode
+
+    _params[('plate_state_node', 'camera_index')] = plate_cam
+    _params[('band_count_node', 'camera_index')] = band_cam
+
+    nodes = []
+    if args.only != 'plate':
+        nodes.append(BandCountNode())  # /tray/ready 를 먼저 발행하도록 먼저 생성
+    if args.only != 'band':
+        nodes.append(PlateStateNode())
+    return nodes
 
 
 if __name__ == '__main__':

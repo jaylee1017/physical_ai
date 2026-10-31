@@ -14,3 +14,4 @@ plate_state_out/
 runs/
 plate_data/
 eval_out/
+plate_vision_roi.json
