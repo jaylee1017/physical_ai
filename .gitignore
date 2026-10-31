@@ -12,3 +12,5 @@ __pycache__/
 predict_shots/
 plate_state_out/
 runs/
+plate_data/
+eval_out/

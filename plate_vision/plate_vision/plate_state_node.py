@@ -40,11 +40,12 @@ class PlateStateNode(Node):
         self.declare_parameter('show_window', True)
         self.declare_parameter('weights', '')          # 비우면 패키지의 models/best.pt
         self.declare_parameter('conf', 0.5)            # 접시 검출 신뢰도
-        self.declare_parameter('food_thresh', 0.05)    # 음식 픽셀 비율이 이 이상이면 food
+        self.declare_parameter('food_thresh', 0.03)    # 음식 픽셀 비율이 이 이상이면 food
         self.declare_parameter('sat_min', 90)
         self.declare_parameter('val_min', 60)
         self.declare_parameter('shrink', 0.85)
-        self.declare_parameter('white_min', 240)       # 하얀 음식(계란초밥) 검사 밝기 기준, 256 이면 끔
+        self.declare_parameter('white_min', 256)       # 흰 덩어리 음식 검사. 흰 접시면 256(끔), 검은 접시면 240
+        self.declare_parameter('ignore_hue', [100, 130])  # 이 색상(파란 띠)은 음식에서 제외
         self.declare_parameter('stable_frames', 5)     # 연속 N프레임 empty 여야 target 발행
 
         weights = self.p('weights') or os.path.join(
@@ -111,7 +112,7 @@ class PlateStateNode(Node):
         plates = []
         for box, conf in zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist()):
             ratio, mask = food_ratio(frame, box, self.p('shrink'), self.p('sat_min'), self.p('val_min'),
-                                     self.p('white_min'))
+                                     self.p('white_min'), ignore_hue=self.p('ignore_hue'))
             plates.append({
                 'state': 'food' if ratio >= self.p('food_thresh') else 'empty',
                 'food_ratio': round(ratio, 4),
