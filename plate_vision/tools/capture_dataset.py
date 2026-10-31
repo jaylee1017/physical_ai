@@ -29,9 +29,12 @@ def open_camera(index, width, height):
     cap = cv2.VideoCapture(index, backend)
     if not cap.isOpened():
         return None
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    # MJPG(압축)여야 1280x720 에서 USB 대역폭이 충분함. 백엔드마다 순서가 달라 앞뒤로 두 번 지정
+    mjpg = cv2.VideoWriter_fourcc(*'MJPG')
+    cap.set(cv2.CAP_PROP_FOURCC, mjpg)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FOURCC, mjpg)
     for _ in range(10):  # 노출 조정 중인 초기 프레임 버림
         cap.read()
     return cap

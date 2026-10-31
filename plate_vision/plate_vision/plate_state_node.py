@@ -58,9 +58,18 @@ class PlateStateNode(Node):
         if not self.cap.isOpened():
             self.get_logger().error(f'/dev/video{cam} 카메라를 열 수 없습니다.')
             raise RuntimeError('Camera open failed')
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        # 1280x720 비압축(YUY2)은 USB 2.0 대역폭을 넘어 화면이 가로줄로 깨짐 → MJPG(압축) 필수
+        # 백엔드마다 적용 순서가 달라서(V4L2: 포맷 먼저, Windows DSHOW: 해상도 먼저) 앞뒤로 두 번 지정
+        mjpg = cv2.VideoWriter_fourcc(*'MJPG')
+        self.cap.set(cv2.CAP_PROP_FOURCC, mjpg)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.p('frame_width'))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.p('frame_height'))
+        self.cap.set(cv2.CAP_PROP_FOURCC, mjpg)
+        fourcc = int(self.cap.get(cv2.CAP_PROP_FOURCC)).to_bytes(4, 'little').decode('latin1')
+        self.get_logger().info(
+            f'camera format = {fourcc} {int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x'
+            f'{int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}'
+            + ('' if fourcc == 'MJPG' else '  ← MJPG 아님: 화면이 깨지면 frame_width/height 를 640x480 으로'))
 
         self.tray_full = False
         self.empty_streak = 0

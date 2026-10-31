@@ -168,10 +168,7 @@ def _install_stubs():
         real = cv2.VideoCapture
 
         def video_capture(index, backend=cv2.CAP_ANY):
-            cap = real(index, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            return cap
+            return real(index, cv2.CAP_DSHOW)   # 포맷·해상도는 노드가 설정
 
         cv2.VideoCapture = video_capture
 
