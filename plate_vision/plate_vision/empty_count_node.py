@@ -1,21 +1,21 @@
 """
 카메라 1대 + YOLO(empty_plate / food_plate)로 빈 그릇을 세고, 3개가 되면 주행로봇 호출
 
-  1) ROI(그릇이 지나가는 영역)만 잘라 YOLO 추적(model.track) → 그릇마다 고유 번호(ID)
+  1) 화면 전체를 YOLO 추적(model.track) → 그릇마다 고유 번호(ID)
   2) 같은 ID 가 empty_plate 로 stable_frames 연속 보이면 '빈 그릇 1개' 로 카운트 (ID 당 한 번만)
      추적이 잠깐 끊겨 새 ID 가 붙어도, 직전에 센 그릇과 같은 자리면 다시 세지 않음
   3) 카운트가 target_count(3) 에 도달 → /tray/ready = True (주행로봇 출발, 로봇팔 적재 중지)
   4) 주행로봇이 그릇 3개를 가져가면 /tray/reset → 카운트 0 부터 다시
 
 Publish
-  /plate/detections   std_msgs/String            ROI 안 그릇 목록(JSON): id, state, counted, cx, cy, conf, box
+  /plate/detections   std_msgs/String            화면 속 그릇 목록(JSON): id, state, counted, cx, cy, conf, box
   /plate/empty_target geometry_msgs/PointStamped 빈 그릇 중심 픽셀 좌표 (로봇팔 pick 목표, 가득 차면 중지)
   /tray/empty_count   std_msgs/Int32             누적 빈 그릇 개수가 바뀔 때
   /tray/ready         std_msgs/Bool              3개 도달 시 True (transient_local)
 Subscribe
   /tray/reset         std_msgs/Empty             주행로봇이 가져간 뒤 → 카운트 초기화
 
-창 단축키: [t] 마우스로 ROI 지정(파일에 저장)  [r] 카운트 초기화  [q] 종료
+창 단축키: [r] 카운트 초기화  [q] 종료
 """
 import json
 import os
@@ -45,8 +45,6 @@ class EmptyCountNode(Node):
         self.declare_parameter('show_window', True)
         self.declare_parameter('weights', '')                 # 비우면 패키지의 models/best.pt
         self.declare_parameter('conf', 0.5)                   # YOLO 신뢰도 기준
-        self.declare_parameter('roi', [0, 0, 0, 0])           # 전부 0 이면 roi_file 에서 읽음
-        self.declare_parameter('roi_file', 'plate_roi.json')
         self.declare_parameter('stable_frames', 8)            # 빈 그릇으로 이만큼 연속 보여야 카운트 (약 0.3초)
         self.declare_parameter('target_count', 3)             # 이만큼 모이면 주행로봇 호출
         self.declare_parameter('same_dist', 80)               # 추적이 끊겨도 이 거리(px) 안이면 같은 그릇
@@ -78,7 +76,6 @@ class EmptyCountNode(Node):
         self.cap.set(cv2.CAP_PROP_FOURCC, mjpg)
 
         # 상태 (구독 콜백보다 먼저 초기화)
-        self.roi = self.load_roi()
         self.target = self.p('target_count')
         self.count = 0
         self.full = False
@@ -96,28 +93,10 @@ class EmptyCountNode(Node):
 
         self.ready_pub.publish(Bool(data=False))
         self.timer = self.create_timer(0.03, self.timer_callback)
-        self.get_logger().info(f'Empty count START  camera=/dev/video{cam}  roi={self.roi}  target={self.target}')
-        if self.roi is None:
-            self.get_logger().warning('ROI 없음 → 창에서 t 키로 그릇이 지나가는 영역을 지정하세요 (그 전에는 화면 전체)')
+        self.get_logger().info(f'Empty count START  camera=/dev/video{cam}  target={self.target}')
 
     def p(self, name):
         return self.get_parameter(name).value
-
-    # ---------------- ROI ----------------
-    def load_roi(self):
-        roi = self.p('roi')
-        if any(roi):
-            return tuple(roi)
-        path = self.p('roi_file')
-        if path and os.path.exists(path):
-            with open(path, encoding='utf-8') as f:
-                return tuple(json.load(f)['roi'])
-        return None
-
-    def save_roi(self, roi):
-        with open(self.p('roi_file'), 'w', encoding='utf-8') as f:
-            json.dump({'roi': list(roi)}, f)
-        self.get_logger().info(f'ROI 저장: {list(roi)} → {os.path.abspath(self.p("roi_file"))}')
 
     # ---------------- 카운트 ----------------
     def reset_callback(self, msg):
@@ -143,20 +122,15 @@ class EmptyCountNode(Node):
         self.frame = frame
         self.frame_no += 1
 
-        # ROI 만 잘라서 YOLO 추적 (persist=True: 프레임 사이에 같은 그릇은 같은 ID 유지)
-        if self.roi is None:
-            ox, oy, roi_img = 0, 0, frame
-        else:
-            x1, y1, x2, y2 = [int(v) for v in self.roi]
-            ox, oy, roi_img = x1, y1, frame[y1:y2, x1:x2]
-        r = self.model.track(roi_img, persist=True, tracker='bytetrack.yaml',
+        # YOLO 추적 (persist=True: 프레임 사이에 같은 그릇은 같은 ID 유지)
+        r = self.model.track(frame, persist=True, tracker='bytetrack.yaml',
                              conf=self.p('conf'), verbose=False)[0]
 
         plates = []
         if r.boxes.id is not None:
             for b, c, k, tid in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(),
                                     r.boxes.cls.tolist(), r.boxes.id.int().tolist()):
-                box = (b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy)
+                box = tuple(b)
                 plates.append(dict(id=tid, state='empty' if r.names[int(k)] == 'empty_plate' else 'food',
                                    conf=round(c, 3), box=[round(v, 1) for v in box],
                                    cx=round((box[0] + box[2]) / 2, 1), cy=round((box[1] + box[3]) / 2, 1)))
@@ -206,9 +180,6 @@ class EmptyCountNode(Node):
     # ---------------- 화면 ----------------
     def show(self, frame, plates):
         view = frame.copy()
-        if self.roi is not None:
-            x1, y1, x2, y2 = [int(v) for v in self.roi]
-            cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 255), 2)
         for pl in plates:
             x1, y1, x2, y2 = [int(v) for v in pl['box']]
             color = EMPTY_COLOR if pl['state'] == 'empty' else FOOD_COLOR
@@ -222,19 +193,12 @@ class EmptyCountNode(Node):
         cv2.putText(view, status, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5)
         cv2.putText(view, status, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                     (0, 0, 255) if self.full else (255, 255, 255), 2)
-        cv2.putText(view, '[t] ROI  [r] reset  [q] quit', (15, view.shape[0] - 15),
+        cv2.putText(view, '[r] reset  [q] quit', (15, view.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.imshow('Empty Plate Count', view)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('t'):
-            x, y, w, h = cv2.selectROI('Empty Plate Count', self.frame, showCrosshair=False)
-            if w > 0 and h > 0:
-                self.roi = (x, y, x + w, y + h)
-                self.tracks, self.recent = {}, []
-                self.model.predictor = None          # ROI 크기가 바뀌었으니 추적기 새로 시작
-                self.save_roi(self.roi)
-        elif key == ord('r'):
+        if key == ord('r'):
             self.reset_callback(None)
         elif key == ord('q') and rclpy.ok():
             rclpy.shutdown()
