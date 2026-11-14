@@ -4,6 +4,7 @@
 
 | 노드 | 카메라 | 역할 |
 |---|---|---|
+| **`empty_count_node`** | **위에서 1대** | **최종 구조.** YOLO(empty_plate/food_plate) 추적으로 빈 그릇을 ID 당 한 번씩 세고, 3개가 되면 `/tray/ready` 로 주행로봇 호출. 학습: `python plate_vision/tools/train.py --data <data.yaml>`, 실행: `ros2 launch plate_vision empty_count.launch.py camera:=0`, Windows: `python run_local.py --count-cam 1` |
 | **`top_vision_node`** | **위에서 1대** | **현재 구조.** 같은 화면에서 원판 위 접시 판별 + 트레이 영역(ROI) 파란 띠 세기. `blobs`(나란히 놓기) / `events`(겹쳐 쌓기) 방식 선택. 실행: `ros2 launch plate_vision top_vision.launch.py camera:=0`, Windows: `python run_local.py --top-cam 1` |
 | `plate_state_node` | A: 회전 테이블 위 | YOLO(`models/best.pt`)로 접시 위치 검출 → 접시 안쪽 음식 픽셀 비율로 empty / food → 빈 접시 위치를 로봇팔에 전달 |
 | `band_count_node` | B: 트레이 옆 | 쌓인 접시 옆면의 **파란 띠 줄 수**를 행 투영으로 셈 (`band_counter.py`). 띠 3개 **또는** 로봇팔 적재 3회 → 트레이 가득 참 |

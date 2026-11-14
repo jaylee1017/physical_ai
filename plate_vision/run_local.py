@@ -264,8 +264,8 @@ def main():
     ap.add_argument('--only', choices=['plate', 'band'], help='한 노드만 실행')
     ap.add_argument('--top-cam', type=int, help='카메라 1대(위에서) 통합 노드로 실행: 카메라 번호')
     ap.add_argument('--top-src', help='카메라 1대 통합 노드를 카메라 대신 이미지 폴더 / 동영상으로')
-    ap.add_argument('--roi-cam', type=int, help='ROI 그릇 2개 노드(plate/band/food YOLO)로 실행: 카메라 번호')
-    ap.add_argument('--roi-src', help='ROI 그릇 2개 노드를 카메라 대신 이미지 폴더 / 동영상으로')
+    ap.add_argument('--count-cam', type=int, help='빈 그릇 카운트 노드(YOLO empty/food)로 실행: 카메라 번호')
+    ap.add_argument('--count-src', help='빈 그릇 카운트 노드를 카메라 대신 이미지 폴더 / 동영상으로')
     args = ap.parse_args()
 
     try:
@@ -284,15 +284,15 @@ def main():
         _fake_sources[band_cam] = FakeCamera(args.band_src, args.hold)
     if args.top_src:
         _fake_sources[-3] = FakeCamera(args.top_src, args.hold)
-    if args.roi_src:
-        _fake_sources[-4] = FakeCamera(args.roi_src, args.hold)
+    if args.count_src:
+        _fake_sources[-4] = FakeCamera(args.count_src, args.hold)
     _install_fake_sources()
 
-    if args.roi_cam is not None or args.roi_src:
-        # ROI 안 그릇 2개: 띠 + 음식 (YOLO plate/band/food)
-        from plate_vision.roi_plate_node import RoiPlateNode
-        _params[('roi_plate_node', 'camera_index')] = -4 if args.roi_src else args.roi_cam
-        nodes = [RoiPlateNode()]
+    if args.count_cam is not None or args.count_src:
+        # 빈 그릇 카운트 → 3개면 주행로봇 호출 (YOLO empty_plate / food_plate)
+        from plate_vision.empty_count_node import EmptyCountNode
+        _params[('empty_count_node', 'camera_index')] = -4 if args.count_src else args.count_cam
+        nodes = [EmptyCountNode()]
     elif args.top_cam is not None or args.top_src:
         # 위에서 보는 카메라 1대로 빈 접시 판별 + 트레이 띠 세기
         from plate_vision.top_vision_node import TopVisionNode
