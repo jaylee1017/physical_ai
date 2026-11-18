@@ -1,5 +1,5 @@
 """
-빈 그릇 / 음식 그릇 YOLO 학습 스크립트
+빈 그릇 / 음식 그릇 (+ 파란 띠) YOLO 학습 스크립트
 
   1) data.yaml 확인 (클래스, 이미지·라벨 개수, path 자동 수정)
   2) 학습 (GPU 있으면 자동 사용)
@@ -18,7 +18,7 @@ from datetime import datetime
 import yaml
 
 PKG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-EXPECTED = ['empty_plate', 'food_plate']
+REQUIRED = {'empty_plate', 'food_plate'}   # band 는 있어도 되고 없어도 됨
 
 
 def check_dataset(data_path):
@@ -30,8 +30,8 @@ def check_dataset(data_path):
 
     names = cfg['names'] if isinstance(cfg['names'], list) else list(cfg['names'].values())
     print(f'클래스: {names}')
-    if names != EXPECTED:
-        print(f'[주의] 예상 클래스 {EXPECTED} 와 다름 → 노드의 클래스 이름 설정을 맞춰야 함')
+    if not REQUIRED <= set(names):
+        print(f'[주의] {sorted(REQUIRED)} 클래스가 없음 → 노드의 클래스 이름 설정을 맞춰야 함')
 
     # Roboflow 기본값(../train/images)은 경로 오류가 잦아서 절대 경로로 고정
     fixed = {'path': root.replace('\\', '/'), 'train': 'train/images',
