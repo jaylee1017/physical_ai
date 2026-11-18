@@ -1,27 +1,20 @@
 """
 ROS2 없이 내 PC(Windows)에서 두 노드를 그대로 실행해 보는 테스트용 스크립트
 
-plate_state_node.py / band_count_node.py 코드는 한 줄도 바꾸지 않고,
+plate_detect_node.py(카메라 A) / band_count_node.py(카메라 B) 코드는 그대로 쓰고,
 rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
-  - 노드끼리 주고받는 토픽(/tray/ready 등)은 실제처럼 전달됨
-  - 발행되는 메시지는 터미널에 출력
+  - 노드끼리 주고받는 토픽은 실제처럼 전달됨, 발행되는 메시지는 터미널에 출력
   - Windows 에서는 CAP_V4L2 대신 DSHOW 로 카메라를 연다
 
 사용 예 (yolo_course 환경, 이 폴더에서):
-    python run_local.py --plate-cam 0 --band-cam 2     # 카메라 2대
-    python run_local.py --only band --band-cam 2       # 빨간 띠 노드만
-    python run_local.py --only plate --plate-cam 2     # 빈 접시 노드만
+    python run_local.py --plate-cam 1 --box-cam 2     # 카메라 2대
+    python run_local.py --only plate --plate-cam 1    # 카메라 A 만 (빈 그릇/음식 그릇)
+    python run_local.py --only box --box-cam 1        # 카메라 B 만 (파란 띠 카운트)
 
-  카메라 1대(위에서) 통합: 빈 접시 판별 + 트레이 파란 띠 세기
-    python run_local.py --top-cam 1
-    python run_local.py --top-src 영상.mp4
+  카메라 없이 (사진 폴더 / 이미지 / 동영상을 카메라처럼 사용):
+    python run_local.py --plate-src test_images --box-src test_images
 
-  카메라 없이 (사진 폴더 / 동영상 / 'demo' 를 카메라처럼 사용):
-    python run_local.py --plate-src test_images --band-src demo
-    python run_local.py --only plate --plate-src 접시영상.mp4
-
-  Plate State 창: [m] 음식 마스크  [q] 종료
-  Band Count 창: [o] 마우스로 ROI 지정  [r] count 초기화  [q] 종료
+  창 단축키: [r] 띠 카운트 초기화(카메라 B)  [q] 종료
 """
 import argparse
 import glob
@@ -31,7 +24,6 @@ import time
 import types
 
 import cv2
-import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _running = True
@@ -80,7 +72,7 @@ class _Publisher:
         self._print(msg)
 
     def _print(self, msg):
-        if self.topic in ('/plate/detections', '/band/detections'):
+        if self.topic in ('/plate/detections', '/band/detections', '/plate/count'):
             return  # 매 프레임이라 출력 생략
         if self.topic == '/plate/empty_target':
             xy = (msg.point.x, msg.point.y)
@@ -183,14 +175,11 @@ class FakeCamera:
     카메라 대신 쓰는 입력
       - 이미지 폴더 / 이미지 파일: 한 장을 hold 프레임 동안 보여 주고 다음 장으로 (끝나면 처음부터)
       - 동영상 파일: 끝나면 처음부터 반복
-      - 'demo': 파란 띠 접시가 0 → 1 → 2 → 3 개로 쌓이는 장면 반복 (띠 카운트 테스트용)
     """
 
     def __init__(self, src, hold):
         self.hold, self.tick, self.video = hold, 0, None
-        if src == 'demo':
-            self.frames = [_demo_stack(n) for n in (0, 1, 2, 3)]
-        elif os.path.isdir(src):
+        if os.path.isdir(src):
             files = sorted(f for f in glob.glob(os.path.join(src, '*'))
                            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')))
             self.frames = [cv2.imread(f) for f in files]
@@ -227,18 +216,6 @@ class FakeCamera:
             self.video.release()
 
 
-def _demo_stack(n):
-    """옆에서 본 트레이 위 접시 n 개 (각 접시 옆면에 파란 띠)"""
-    img = np.full((480, 640, 3), (170, 170, 170), np.uint8)
-    cv2.rectangle(img, (160, 390), (480, 410), (60, 60, 60), -1)                 # 트레이
-    for i in range(n):
-        y = 385 - i * 30
-        cv2.rectangle(img, (190, y - 24), (450, y), (40, 40, 40), -1)            # 접시 옆면
-        cv2.rectangle(img, (200, y - 18), (440, y - 8), (200, 90, 20), -1)       # 파란 띠
-    cv2.putText(img, f'demo: {n} plates', (20, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-    return img
-
-
 _real_capture = cv2.VideoCapture
 _fake_sources = {}   # 가짜 카메라 번호 -> FakeCamera
 
@@ -256,16 +233,12 @@ def _install_fake_sources():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--plate-cam', type=int, default=0, help='회전 테이블 카메라 번호')
-    ap.add_argument('--band-cam', type=int, default=2, help='트레이 띠 카메라 번호')
-    ap.add_argument('--plate-src', help='카메라 대신: 이미지 폴더 / 이미지 / 동영상 경로')
-    ap.add_argument('--band-src', help="카메라 대신: 이미지 폴더 / 이미지 / 동영상 경로, 또는 'demo'")
+    ap.add_argument('--plate-cam', type=int, default=0, help='카메라 A 번호 (회전 원판, 빈 그릇/음식 그릇)')
+    ap.add_argument('--box-cam', type=int, default=2, help='카메라 B 번호 (박스, 파란 띠 카운트)')
+    ap.add_argument('--plate-src', help='카메라 A 대신: 이미지 폴더 / 이미지 / 동영상 경로')
+    ap.add_argument('--box-src', help='카메라 B 대신: 이미지 폴더 / 이미지 / 동영상 경로')
     ap.add_argument('--hold', type=int, default=30, help='이미지 한 장을 보여 줄 프레임 수 (30 ≈ 1초)')
-    ap.add_argument('--only', choices=['plate', 'band'], help='한 노드만 실행')
-    ap.add_argument('--top-cam', type=int, help='카메라 1대(위에서) 통합 노드로 실행: 카메라 번호')
-    ap.add_argument('--top-src', help='카메라 1대 통합 노드를 카메라 대신 이미지 폴더 / 동영상으로')
-    ap.add_argument('--count-cam', type=int, help='빈 그릇 카운트 노드(YOLO empty/food)로 실행: 카메라 번호')
-    ap.add_argument('--count-src', help='빈 그릇 카운트 노드를 카메라 대신 이미지 폴더 / 동영상으로')
+    ap.add_argument('--only', choices=['plate', 'box'], help='한 노드만 실행')
     args = ap.parse_args()
 
     try:
@@ -275,31 +248,25 @@ def main():
         pass
 
     _install_stubs()
-    plate_cam, band_cam = args.plate_cam, args.band_cam
+    plate_cam, box_cam = args.plate_cam, args.box_cam
     if args.plate_src:
         plate_cam = -1
         _fake_sources[plate_cam] = FakeCamera(args.plate_src, args.hold)
-    if args.band_src:
-        band_cam = -2
-        _fake_sources[band_cam] = FakeCamera(args.band_src, args.hold)
-    if args.top_src:
-        _fake_sources[-3] = FakeCamera(args.top_src, args.hold)
-    if args.count_src:
-        _fake_sources[-4] = FakeCamera(args.count_src, args.hold)
+    if args.box_src:
+        box_cam = -2
+        _fake_sources[box_cam] = FakeCamera(args.box_src, args.hold)
     _install_fake_sources()
 
-    if args.count_cam is not None or args.count_src:
-        # 빈 그릇 카운트 → 3개면 주행로봇 호출 (YOLO empty_plate / food_plate)
-        from plate_vision.empty_count_node import EmptyCountNode
-        _params[('empty_count_node', 'camera_index')] = -4 if args.count_src else args.count_cam
-        nodes = [EmptyCountNode()]
-    elif args.top_cam is not None or args.top_src:
-        # 위에서 보는 카메라 1대로 빈 접시 판별 + 트레이 띠 세기
-        from plate_vision.top_vision_node import TopVisionNode
-        _params[('top_vision_node', 'camera_index')] = -3 if args.top_src else args.top_cam
-        nodes = [TopVisionNode()]
-    else:
-        nodes = _two_camera_nodes(args, plate_cam, band_cam)
+    from plate_vision.plate_detect_node import PlateDetectNode
+    from plate_vision.band_count_node import BandCountNode
+    _params[('plate_detect_node', 'camera_index')] = plate_cam
+    _params[('band_count_node', 'camera_index')] = box_cam
+
+    nodes = []
+    if args.only != 'plate':
+        nodes.append(BandCountNode())
+    if args.only != 'box':
+        nodes.append(PlateDetectNode())
 
     try:
         while _running:
@@ -311,21 +278,6 @@ def main():
     finally:
         for node in nodes:
             node.destroy_node()
-
-
-def _two_camera_nodes(args, plate_cam, band_cam):
-    from plate_vision.plate_state_node import PlateStateNode
-    from plate_vision.band_count_node import BandCountNode
-
-    _params[('plate_state_node', 'camera_index')] = plate_cam
-    _params[('band_count_node', 'camera_index')] = band_cam
-
-    nodes = []
-    if args.only != 'plate':
-        nodes.append(BandCountNode())  # /tray/ready 를 먼저 발행하도록 먼저 생성
-    if args.only != 'band':
-        nodes.append(PlateStateNode())
-    return nodes
 
 
 if __name__ == '__main__':

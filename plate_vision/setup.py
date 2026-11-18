@@ -18,15 +18,12 @@ setup(
     zip_safe=True,
     maintainer='Subin Lee',
     maintainer_email='20233130@gs.cwnu.ac.kr',
-    description='Empty/food plate detection and red band counting',
+    description='Camera A: empty/food plate detection, Camera B: blue band counting (YOLO)',
     license='MIT',
     entry_points={
         'console_scripts': [
-            'plate_state_node = plate_vision.plate_state_node:main',
-            'empty_count_node = plate_vision.empty_count_node:main',
-            'top_vision_node = plate_vision.top_vision_node:main',
+            'plate_detect_node = plate_vision.plate_detect_node:main',
             'band_count_node = plate_vision.band_count_node:main',
-            'red_count_node = plate_vision.red_count_node:main',
         ],
     },
 )

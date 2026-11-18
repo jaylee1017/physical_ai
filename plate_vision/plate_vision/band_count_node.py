@@ -1,25 +1,35 @@
 """
-트레이 적재 개수 확인 노드 (카메라 B: 트레이 옆에서 쌓인 접시 옆면을 봄)
+카메라 B (빈 그릇을 쌓는 박스 쪽): YOLO 로 파란 띠 검출 → 개수 세기 → 3개면 주행로봇 호출
 
-파란 띠 개수(band_counter.py, 행 투영 방식)  OR  로봇팔 적재 횟수
-→ 둘 중 하나라도 target_count 에 도달하면 트레이 가득 참 → /tray/ready = True
+  1) 매 프레임 YOLO(models/best.pt)의 band 박스 개수를 셈 (지금 화면에 보이는 띠 개수)
+  2) 같은 개수가 stable_frames 동안 유지되면 '확정 개수' 로 인정 (로봇팔이 잠깐 가려도 흔들리지 않게)
+  3) 확정 개수 ≥ target_count(3) → /tray/ready = True (주행로봇 출발)
+  4) 주행로봇이 박스를 가져간 뒤 /tray/reset → 띠 개수가 target 아래로 내려가야 다시 호출 가능
+     (박스를 아직 안 치웠는데 바로 또 호출되는 것 방지)
 
 Publish
-  /tray/band_count   std_msgs/Int32  확정된 띠 개수가 바뀔 때
-  /tray/ready        std_msgs/Bool   가득 차면 True (transient_local, 이동형 로봇 호출 / 접시 판별 중지)
+  /tray/band_count  std_msgs/Int32   확정 띠 개수가 바뀔 때
+  /tray/ready       std_msgs/Bool    True = 띠 3개 → 주행로봇 출발 (늦게 켜진 노드도 마지막 값을 받게 transient_local)
+  /band/detections  std_msgs/String  매 프레임 띠 목록 JSON [{"conf", "cx", "cy", "box"}, ...]
 Subscribe
-  /arm/place_count   std_msgs/Int32  로봇팔이 트레이에 놓은 누적 개수 (로봇팔 담당이 발행)
-  /tray/reset        std_msgs/Empty  새 트레이로 교체 → 개수 초기화
+  /tray/reset       std_msgs/Empty   주행로봇이 박스를 가져간 뒤 보냄
 
-창 단축키: [o] 마우스로 ROI 지정  [r] 초기화  [q] 종료
+창 단축키: [r] 초기화  [q] 종료
 """
+import json
+import os
+
 import cv2
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
-from std_msgs.msg import Bool, Empty, Int32
+from std_msgs.msg import Bool, Empty, Int32, String
+from ultralytics import YOLO
 
-from plate_vision.band_counter import BandCounter, draw_debug
+from plate_vision.camera import open_camera
+
+BAND_COLOR = (255, 0, 255)
 
 
 class BandCountNode(Node):
@@ -27,133 +37,117 @@ class BandCountNode(Node):
     def __init__(self):
         super().__init__('band_count_node')
 
-        # ---------------- parameters ----------------
         self.declare_parameter('camera_index', 2)
-        self.declare_parameter('frame_width', 640)
-        self.declare_parameter('frame_height', 480)
+        self.declare_parameter('frame_width', 1280)
+        self.declare_parameter('frame_height', 720)
         self.declare_parameter('show_window', True)
-        self.declare_parameter('target_count', 3)
-        # 띠 검출 (실험실에서 조정할 값들)
-        self.declare_parameter('roi', [0, 0, 0, 0])            # [x1, y1, x2, y2], 전부 0 이면 화면 전체
-        self.declare_parameter('lower_hsv', [100, 120, 60])     # 파란색
-        self.declare_parameter('upper_hsv', [130, 255, 255])
-        self.declare_parameter('close_width', 25)
-        self.declare_parameter('rel_fill', 0.5)
-        self.declare_parameter('min_width_ratio', 0.15)
-        self.declare_parameter('min_band_rows', 3)
-        self.declare_parameter('band_height', 0)
-        self.declare_parameter('stable_frames', 15)
-        # 로봇팔 적재 횟수와 OR 조건
-        self.declare_parameter('use_arm_count', True)
+        self.declare_parameter('weights', '')      # 비우면 패키지의 models/best.pt
+        self.declare_parameter('conf', 0.5)        # YOLO 신뢰도 기준
+        self.declare_parameter('target_count', 3)  # 띠가 이만큼 보이면 주행로봇 호출
+        self.declare_parameter('stable_frames', 15)  # 같은 개수가 이만큼 유지돼야 확정 (약 0.5초)
 
-        p = self.p
-        roi = p('roi')
-        self.counter = BandCounter(
-            lower_hsv=p('lower_hsv'), upper_hsv=p('upper_hsv'),
-            roi=roi if any(roi) else None,
-            close_width=p('close_width'), rel_fill=p('rel_fill'),
-            min_width_ratio=p('min_width_ratio'), min_band_rows=p('min_band_rows'),
-            band_height=p('band_height'), stable_frames=p('stable_frames'))
-        self.target = p('target_count')
+        weights = self.p('weights') or os.path.join(
+            get_package_share_directory('plate_vision'), 'models', 'best.pt')
+        self.model = YOLO(weights)
+        if 'band' not in self.model.names.values():
+            self.get_logger().error(f'모델에 band 클래스가 없음: {list(self.model.names.values())}')
 
-        # ---------------- camera ----------------
-        cam = p('camera_index')
-        self.cap = cv2.VideoCapture(cam, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
+        cam = self.p('camera_index')
+        self.cap, fmt = open_camera(cam, self.p('frame_width'), self.p('frame_height'))
+        if self.cap is None:
             self.get_logger().error(f'/dev/video{cam} 카메라를 열 수 없습니다.')
             raise RuntimeError('Camera open failed')
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, p('frame_width'))
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, p('frame_height'))
 
-        # ---------------- state (구독 콜백보다 먼저 초기화) ----------------
-        self.arm_count = 0
-        self.full = False
-        self.last_published = -1
-        self.frame = None
+        # 상태 (구독 콜백보다 먼저 초기화)
+        self.target = self.p('target_count')
+        self.count = 0          # 확정 띠 개수
+        self.last_raw = -1      # 직전 프레임 띠 개수
+        self.same = 0           # 같은 개수가 이어진 프레임 수
+        self.full = False       # 주행로봇 호출함
+        self.armed = True       # 호출 가능 상태 (reset 후 띠가 target 아래로 내려가야 다시 True)
+        self.last_pub = -1
 
-        # ---------------- pub / sub ----------------
         self.count_pub = self.create_publisher(Int32, '/tray/band_count', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.ready_pub = self.create_publisher(Bool, '/tray/ready', latched)
+        self.band_pub = self.create_publisher(String, '/band/detections', 10)
         self.create_subscription(Empty, '/tray/reset', self.reset_callback, 10)
-        if p('use_arm_count'):
-            self.create_subscription(Int32, '/arm/place_count', self.arm_callback, 10)
 
         self.ready_pub.publish(Bool(data=False))
         self.timer = self.create_timer(0.03, self.timer_callback)
-        self.get_logger().info(
-            f'Band counter START  camera=/dev/video{cam}  target={self.target}  '
-            f'roi={self.counter.roi or "full frame"}  arm_count={"ON" if p("use_arm_count") else "OFF"}')
+        self.get_logger().info(f'[카메라 B] 파란 띠 카운트 START  /dev/video{cam} {fmt}  target={self.target}')
 
     def p(self, name):
         return self.get_parameter(name).value
 
-    # ------------------------------------------------------------
-    def arm_callback(self, msg):
-        self.arm_count = msg.data
-        self.get_logger().info(f'ARM PLACE COUNT = {self.arm_count}')
-
     def reset_callback(self, msg):
-        # 이동형 로봇이 트레이를 가져가고 새 트레이가 놓이면 호출
-        self.counter.reset()
-        self.arm_count = 0
+        # 주행로봇이 박스를 가져간 뒤 호출
         self.full = False
-        self.last_published = -1
+        self.armed = False      # 띠가 target 아래로 내려간 걸 확인한 뒤에 다시 셀 수 있게
         self.ready_pub.publish(Bool(data=False))
-        self.get_logger().info('RESET → 새 트레이 count 시작')
+        self.get_logger().info('RESET → 박스가 비워지면(띠 < target) 다시 카운트')
 
     def timer_callback(self):
         ret, frame = self.cap.read()
         if not ret:
             self.get_logger().warning('카메라 frame을 읽지 못했습니다.')
             return
-        self.frame = frame
 
-        result = self.counter.update(frame)
-        band = result['stable']
+        r = self.model(frame, conf=self.p('conf'), verbose=False)[0]
+        bands = [{'conf': round(c, 3), 'cx': round((b[0] + b[2]) / 2, 1), 'cy': round((b[1] + b[3]) / 2, 1),
+                  'box': [round(v, 1) for v in b]}
+                 for b, c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist())
+                 if r.names[int(k)] == 'band']
+        self.band_pub.publish(String(data=json.dumps(bands)))
 
-        if band != self.last_published:
-            self.count_pub.publish(Int32(data=band))
-            self.get_logger().info(f'BAND COUNT = {band}')
-            self.last_published = band
+        # 같은 개수가 stable_frames 동안 이어져야 확정
+        raw = len(bands)
+        if raw == self.last_raw:
+            self.same += 1
+        else:
+            self.last_raw, self.same = raw, 1
+        if self.same >= self.p('stable_frames'):
+            self.count = raw
 
-        # 띠 개수 OR 로봇팔 적재 횟수
-        if not self.full and (band >= self.target or self.arm_count >= self.target):
+        if self.count != self.last_pub:
+            self.count_pub.publish(Int32(data=self.count))
+            self.get_logger().info(f'띠 개수 {self.count}/{self.target}')
+            self.last_pub = self.count
+
+        if not self.armed and self.count < self.target:
+            self.armed = True
+            self.get_logger().info('박스 비워짐 확인 → 다시 카운트 시작')
+        if self.armed and not self.full and self.count >= self.target:
             self.full = True
-            reason = 'band' if band >= self.target else 'arm'
             self.ready_pub.publish(Bool(data=True))
-            self.get_logger().info('====================')
-            self.get_logger().info(f'  TRAY FULL ({reason}: band={band}, arm={self.arm_count})')
-            self.get_logger().info('====================')
+            self.get_logger().info(f'==== 띠 {self.count}개 → 주행로봇 호출 (/tray/ready = True) ====')
 
         if self.p('show_window'):
-            self.show(frame, result)
+            self.show(frame, bands, raw)
 
-    # ------------------------------------------------------------
-    def show(self, frame, result):
-        view, debug = draw_debug(frame, result, self.counter, self.target,
-                                 extra_text=f'arm place count: {self.arm_count}')
-        cv2.imshow('Band Count', view)
-        cv2.imshow('Band Mask | row projection', debug)
+    def show(self, frame, bands, raw):
+        view = frame.copy()
+        for i, b in enumerate(bands, 1):
+            x1, y1, x2, y2 = [int(v) for v in b['box']]
+            cv2.rectangle(view, (x1, y1), (x2, y2), BAND_COLOR, 3)
+            cv2.putText(view, f"band{i} {b['conf']:.2f}", (x1, max(y1 - 8, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, BAND_COLOR, 2)
+        text = f'BAND {self.count} / {self.target}  (now {raw})' + ('   -> ROBOT CALLED' if self.full else '')
+        cv2.putText(view, text, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5)
+        cv2.putText(view, text, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                    (0, 0, 255) if self.full else (255, 255, 255), 2)
+        cv2.putText(view, '[r] reset  [q] quit', (15, view.shape[0] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.imshow('Camera B - Bands', view)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('r'):
             self.reset_callback(None)
-        elif key == ord('o'):
-            self.select_roi()
         elif key == ord('q') and rclpy.ok():
             rclpy.shutdown()
 
-    def select_roi(self):
-        # 마우스로 트레이 영역을 드래그 → Enter. 출력된 값을 파라미터로 저장해 두면 됨
-        x, y, w, h = cv2.selectROI('Band Count', self.frame, showCrosshair=False)
-        if w > 0 and h > 0:
-            self.counter.roi = (x, y, x + w, y + h)
-            self.counter.reset()
-            self.get_logger().info(f'ROI 설정: -p roi:="[{x}, {y}, {x + w}, {y + h}]"')
-
     def destroy_node(self):
-        if self.cap.isOpened():
+        if self.cap is not None and self.cap.isOpened():
             self.cap.release()
         cv2.destroyAllWindows()
         super().destroy_node()
