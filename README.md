@@ -40,12 +40,25 @@ v4l2-ctl --list-devices
 ```
 카메라마다 `/dev/video0`, `/dev/video2` 처럼 나옵니다. 카메라 하나에 번호가 2개 잡히면 보통 **앞 번호**가 실제 카메라입니다.
 
-**5. 실행** (`plate_camera` = 카메라 A 번호, `box_camera` = 카메라 B 번호)
+**5. 실행**
+
+**카메라가 1대뿐일 때 (지금)**: 하나씩 따로 실행합니다. 카메라 번호는 4번에서 확인한 번호(보통 0)를 넣으세요.
+```bash
+# 카메라 A 역할: 원판 위 빈 그릇 / 음식 그릇 구분
+ros2 run plate_vision plate_detect_node --ros-args -p camera_index:=0
+```
+```bash
+# 카메라 B 역할: 박스 쪽 파란 띠 카운트 → 3개면 주행로봇 호출
+ros2 run plate_vision band_count_node --ros-args -p camera_index:=0
+```
+`Ctrl+C`(또는 창에서 `q`)로 끄고, 카메라 방향을 바꾼 뒤 다른 노드를 실행하면 됩니다.
+
+**카메라 2대일 때**: 한 번에 실행 (`plate_camera` = 카메라 A 번호, `box_camera` = 카메라 B 번호)
 ```bash
 ros2 launch plate_vision plate_vision.launch.py plate_camera:=0 box_camera:=2
 ```
 
-창이 2개 뜹니다.
+2대 모드에서는 창이 2개 뜹니다.
 - **Camera A - Plates**: 빈 그릇은 초록 `EMPTY`, 음식 그릇은 주황 `FOOD`
 - **Camera B - Bands**: 파란 띠는 보라색 박스, 위쪽에 `BAND 0 / 3`. 3 이 되면 `ROBOT CALLED`
 
