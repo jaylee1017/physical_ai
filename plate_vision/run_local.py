@@ -80,7 +80,7 @@ class _Publisher:
         self._print(msg)
 
     def _print(self, msg):
-        if self.topic == '/plate/detections':
+        if self.topic in ('/plate/detections', '/band/detections'):
             return  # 매 프레임이라 출력 생략
         if self.topic == '/plate/empty_target':
             xy = (msg.point.x, msg.point.y)

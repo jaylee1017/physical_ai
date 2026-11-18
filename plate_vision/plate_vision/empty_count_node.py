@@ -1,14 +1,16 @@
 """
-카메라 1대 + YOLO(empty_plate / food_plate)로 빈 그릇을 세고, 3개가 되면 주행로봇 호출
+카메라 1대 + YOLO(empty_plate / food_plate / band)로 빈 그릇을 세고, 3개가 되면 주행로봇 호출
 
   1) 화면 전체를 YOLO 추적(model.track) → 그릇마다 고유 번호(ID)
+     파란 띠(band)는 띠 중심이 들어 있는 그릇 중 중심이 가장 가까운 그릇에 배정
   2) 같은 ID 가 empty_plate 로 stable_frames 연속 보이면 '빈 그릇 1개' 로 카운트 (ID 당 한 번만)
      추적이 잠깐 끊겨 새 ID 가 붙어도, 직전에 센 그릇과 같은 자리면 다시 세지 않음
   3) 카운트가 target_count(3) 에 도달 → /tray/ready = True (주행로봇 출발, 로봇팔 적재 중지)
   4) 주행로봇이 그릇 3개를 가져가면 /tray/reset → 카운트 0 부터 다시
 
 Publish
-  /plate/detections   std_msgs/String            화면 속 그릇 목록(JSON): id, state, counted, cx, cy, conf, box
+  /plate/detections   std_msgs/String            화면 속 그릇 목록(JSON): id, state, counted, band, band_box, cx, cy, conf, box
+  /band/detections    std_msgs/String            화면 속 파란 띠 목록(JSON): box, cx, cy, conf, plate_id(어느 그릇의 띠인지)
   /plate/empty_target geometry_msgs/PointStamped 빈 그릇 중심 픽셀 좌표 (로봇팔 pick 목표, 가득 차면 중지)
   /tray/empty_count   std_msgs/Int32             누적 빈 그릇 개수가 바뀔 때
   /tray/ready         std_msgs/Bool              3개 도달 시 True (transient_local)
@@ -32,6 +34,7 @@ from ultralytics import YOLO
 EMPTY_COLOR = (0, 255, 0)
 FOOD_COLOR = (0, 140, 255)
 COUNTED_COLOR = (255, 255, 0)
+BAND_COLOR = (255, 0, 255)
 
 
 class EmptyCountNode(Node):
@@ -49,6 +52,7 @@ class EmptyCountNode(Node):
         self.declare_parameter('target_count', 3)             # 이만큼 모이면 주행로봇 호출
         self.declare_parameter('same_dist', 80)               # 추적이 끊겨도 이 거리(px) 안이면 같은 그릇
         self.declare_parameter('lost_frames', 30)             # 그 판단을 몇 프레임 동안 유지할지 (약 1초)
+        self.declare_parameter('require_band', False)         # True 면 띠가 보이는 빈 그릇만 카운트
 
         try:
             import lap  # noqa: F401  (YOLO 추적기 ByteTrack 이 필요로 함)
@@ -85,6 +89,7 @@ class EmptyCountNode(Node):
         self.frame = None
 
         self.det_pub = self.create_publisher(String, '/plate/detections', 10)
+        self.band_pub = self.create_publisher(String, '/band/detections', 10)
         self.target_pub = self.create_publisher(PointStamped, '/plate/empty_target', 10)
         self.count_pub = self.create_publisher(Int32, '/tray/empty_count', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -126,14 +131,26 @@ class EmptyCountNode(Node):
         r = self.model.track(frame, persist=True, tracker='bytetrack.yaml',
                              conf=self.p('conf'), verbose=False)[0]
 
-        plates = []
+        plates, bands = [], []
         if r.boxes.id is not None:
             for b, c, k, tid in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(),
                                     r.boxes.cls.tolist(), r.boxes.id.int().tolist()):
-                box = tuple(b)
-                plates.append(dict(id=tid, state='empty' if r.names[int(k)] == 'empty_plate' else 'food',
-                                   conf=round(c, 3), box=[round(v, 1) for v in box],
-                                   cx=round((box[0] + box[2]) / 2, 1), cy=round((box[1] + box[3]) / 2, 1)))
+                name = r.names[int(k)]
+                item = dict(conf=round(c, 3), box=[round(v, 1) for v in b],
+                            cx=round((b[0] + b[2]) / 2, 1), cy=round((b[1] + b[3]) / 2, 1))
+                if name == 'band':
+                    bands.append(dict(item, plate_id=None))
+                elif name in ('empty_plate', 'food_plate'):
+                    plates.append(dict(item, id=tid, state='empty' if name == 'empty_plate' else 'food',
+                                       band=False, band_box=None))
+
+        # 띠 → 그릇 배정: 띠 중심이 그릇 박스 안에 있고, 그릇 중심과 가장 가까운 그릇 (그릇마다 신뢰도 높은 띠 하나)
+        for bd in sorted(bands, key=lambda x: -x['conf']):
+            inside = [pl for pl in plates if pl['box'][0] <= bd['cx'] <= pl['box'][2]
+                      and pl['box'][1] <= bd['cy'] <= pl['box'][3] and not pl['band']]
+            if inside:
+                pl = min(inside, key=lambda q: (q['cx'] - bd['cx']) ** 2 + (q['cy'] - bd['cy']) ** 2)
+                pl['band'], pl['band_box'], bd['plate_id'] = True, bd['box'], pl['id']
 
         # 오래 안 보인 '최근에 센 그릇' 기록은 지움
         self.recent = [(x, y, f) for x, y, f in self.recent if self.frame_no - f <= self.p('lost_frames')]
@@ -144,7 +161,8 @@ class EmptyCountNode(Node):
                 t['counted'] = True                     # 추적이 끊겨 새 ID 가 붙은 같은 그릇
             t['empty_frames'] = t['empty_frames'] + 1 if pl['state'] == 'empty' else 0
 
-            if pl['state'] == 'empty' and not t['counted'] and not self.full \
+            band_ok = pl['band'] or not self.p('require_band')
+            if pl['state'] == 'empty' and band_ok and not t['counted'] and not self.full \
                     and t['empty_frames'] >= self.p('stable_frames'):
                 t['counted'] = True
                 self.count += 1
@@ -162,6 +180,7 @@ class EmptyCountNode(Node):
             pl['counted'] = t['counted']
 
         self.det_pub.publish(String(data=json.dumps(plates)))
+        self.band_pub.publish(String(data=json.dumps(bands)))
 
         # 로봇팔 목표: 가득 차지 않았을 때, 안정적으로 보이는 빈 그릇 중 신뢰도 가장 높은 것
         stable = [pl for pl in plates if pl['state'] == 'empty'
@@ -175,16 +194,20 @@ class EmptyCountNode(Node):
             self.target_pub.publish(msg)
 
         if self.p('show_window'):
-            self.show(frame, plates)
+            self.show(frame, plates, bands)
 
     # ---------------- 화면 ----------------
-    def show(self, frame, plates):
+    def show(self, frame, plates, bands):
         view = frame.copy()
+        for bd in bands:
+            x1, y1, x2, y2 = [int(v) for v in bd['box']]
+            cv2.rectangle(view, (x1, y1), (x2, y2), BAND_COLOR, 2)
+            cv2.putText(view, f"band {bd['conf']:.2f}", (x1, y2 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, BAND_COLOR, 2)
         for pl in plates:
             x1, y1, x2, y2 = [int(v) for v in pl['box']]
             color = EMPTY_COLOR if pl['state'] == 'empty' else FOOD_COLOR
             cv2.rectangle(view, (x1, y1), (x2, y2), color, 3)
-            label = f"ID{pl['id']} {pl['state'].upper()} {pl['conf']:.2f}" + ('  COUNTED' if pl['counted'] else '')
+            label = f"ID{pl['id']} {pl['state'].upper()} {pl['conf']:.2f}  band {'O' if pl['band'] else 'X'}" +                     ('  COUNTED' if pl['counted'] else '')
             cv2.putText(view, label, (x1, max(y1 - 10, 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
             cv2.putText(view, label, (x1, max(y1 - 10, 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         COUNTED_COLOR if pl['counted'] else color, 2)
