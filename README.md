@@ -11,7 +11,47 @@
 
 ---
 
-## 빠른 시작 (Ubuntu + ROS2)
+## 제일 먼저: ROS2 없이 바로 테스트 (Ubuntu)
+
+ROS2 설치나 빌드 없이 **파이썬만으로** 두 노드를 그대로 돌려 볼 수 있습니다. 카메라가 1대면 하나씩 실행하세요.
+
+**1. 받기 + 설치** (처음 한 번)
+```bash
+git clone https://github.com/jaylee1017/physical_ai.git
+cd physical_ai/plate_vision
+pip install ultralytics "numpy<2"
+```
+Ubuntu 24.04 에서 `externally-managed-environment` 오류가 나면 뒤에 `--break-system-packages` 를 붙이세요.
+
+**2. 카메라 번호 확인**
+```bash
+v4l2-ctl --list-devices
+```
+`/dev/video0` 이면 번호는 `0` 입니다. (`v4l2-ctl` 이 없으면 `sudo apt install v4l-utils`)
+
+**3. 실행** (`physical_ai/plate_vision` 폴더에서)
+```bash
+# 카메라 A 역할: 원판을 위에서 비추고 → 빈 그릇 / 음식 그릇 구분
+python3 run_local.py --only plate --plate-cam 0
+```
+```bash
+# 카메라 B 역할: 박스 쪽을 비추고 → 파란 띠 개수, 3개면 "주행로봇 호출" 출력
+python3 run_local.py --only box --box-cam 0
+```
+```bash
+# 카메라 없이 저장된 사진으로 확인
+python3 run_local.py --plate-src test_images --box-src test_images
+```
+창 단축키: `q` 종료, `r` 띠 카운트 초기화(카메라 B). 로봇 호출 같은 신호는 터미널에 출력됩니다.
+
+**코드 업데이트 받기**
+```bash
+cd physical_ai && git pull
+```
+
+---
+
+## ROS2 로 실행 (다른 팀원 코드와 연결할 때)
 
 ROS2(Humble 또는 Jazzy)가 설치되어 있다고 가정합니다.
 

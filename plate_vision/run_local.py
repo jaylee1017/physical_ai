@@ -1,5 +1,5 @@
 """
-ROS2 없이 내 PC(Windows)에서 두 노드를 그대로 실행해 보는 테스트용 스크립트
+ROS2 없이 (Windows / Ubuntu) 두 노드를 그대로 실행해 보는 테스트용 스크립트
 
 plate_detect_node.py(카메라 A) / band_count_node.py(카메라 B) 코드는 그대로 쓰고,
 rclpy·메시지 타입만 가짜(stub)로 바꿔 끼워서 실행한다.
