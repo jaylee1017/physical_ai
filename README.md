@@ -11,6 +11,24 @@
 
 ---
 
+## 가상카메라 적용 실행 코드 (우분투)
+```bash
+ffmpeg -f v4l2 -input_format mjpeg -video_size 1280x720 -i /dev/video0 \
+       -vf format=yuv420p -f v4l2 /dev/video10
+
+cd physical_ai/plate_vision
+
+python3 run_local.py --only plate  
+
+```
+#### 빈접시 인식 코드만 실행
+
+```bash
+python3 run_local.py --only box
+```
+#### 파란띠 검출 코드만 실행
+
+
 ## 제일 먼저: ROS2 없이 바로 테스트 (Ubuntu)
 
 ROS2 설치나 빌드 없이 **파이썬만으로** 두 노드를 그대로 돌려 볼 수 있습니다. 카메라가 1대면 하나씩 실행하세요.
